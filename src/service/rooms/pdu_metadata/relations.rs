@@ -14,27 +14,29 @@ use tuwunel_core::{
 		u64_from_u8,
 	},
 };
+use tuwunel_database::Txn;
 
 use super::Service;
-use crate::rooms::short::ShortRoomId;
+use crate::rooms::{short::ShortRoomId, timeline::bias_count};
 
 type StartKey = ArrayVec<u8, 16>;
 
 #[implement(Service)]
 #[tracing::instrument(skip(self, from, to), level = "debug")]
 pub fn add_relation(&self, from: PduCount, to: PduCount) {
-	const BUFSIZE: usize = size_of::<u64>() * 2;
+	let mut txn = self.services.db.txn();
+	self.stage_relation(&mut txn, from, to);
+	txn.execute();
+}
 
-	match (from, to) {
-		| (PduCount::Normal(from), PduCount::Normal(to)) => {
-			let key: &[u64] = &[to, from];
-
-			self.db
-				.tofrom_relation
-				.aput_raw::<BUFSIZE, _, _>(key, []);
-		},
-		| _ => {}, // TODO: Relations with backfilled pdus
-	}
+#[implement(Service)]
+pub fn stage_relation(&self, txn: &mut Txn, from: PduCount, to: PduCount) {
+	let key = if self.services.config.bridge_batch_send {
+		[bias_count(to.to_be_bytes()), bias_count(from.to_be_bytes())]
+	} else {
+		[to.into_unsigned(), from.into_unsigned()]
+	};
+	txn.put_raw(&self.db.tofrom_relation, key.as_slice(), []);
 }
 
 /// Query relations of an event to determine if matching any of the trailing
@@ -124,14 +126,24 @@ pub fn get_relations<'a>(
 	dir: Direction,
 	user_id: Option<&'a UserId>,
 ) -> impl Stream<Item = (PduCount, Pdu)> + Send + '_ {
-	let target = target.to_be_bytes();
-	let from = from
-		.map(|from| from.saturating_inc(dir))
-		.unwrap_or_else(|| match dir {
-			| Direction::Backward => PduCount::max(),
-			| Direction::Forward => PduCount::default(),
-		})
-		.to_be_bytes();
+	let signed_order = self.services.config.bridge_batch_send;
+	let encode = |count: PduCount| {
+		if signed_order {
+			bias_count(count.to_be_bytes())
+		} else {
+			count.into_unsigned()
+		}
+	};
+	let target = encode(target).to_be_bytes();
+	let from = encode(
+		from.map(|from| from.saturating_inc(dir))
+			.unwrap_or_else(|| match dir {
+				| Direction::Backward => PduCount::max(),
+				| Direction::Forward if signed_order => PduCount::min(),
+				| Direction::Forward => PduCount::default(),
+			}),
+	)
+	.to_be_bytes();
 
 	let mut buf = StartKey::new();
 	let start = {
@@ -147,7 +159,13 @@ pub fn get_relations<'a>(
 	.ignore_err()
 	.ready_take_while(move |key| key.starts_with(&target))
 	.map(|to_from| u64_from_u8(&to_from[8..16]))
-	.map(PduCount::from_unsigned)
+	.map(move |count| {
+		if signed_order {
+			PduCount::from_signed(count.cast_signed().wrapping_add(i64::MIN))
+		} else {
+			PduCount::from_unsigned(count)
+		}
+	})
 	.map(move |count| (user_id, shortroomid, count))
 	.wide_filter_map(async |(user_id, shortroomid, count)| {
 		let pdu_id: RawPduId = PduId { shortroomid, count }.into();

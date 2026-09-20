@@ -1,5 +1,6 @@
 mod append;
 mod backfill;
+mod batch;
 mod build;
 mod create;
 mod pdus;
@@ -41,12 +42,18 @@ use tuwunel_core::{
 };
 use tuwunel_database::{Database, Deserialized, Json, Map, Txn};
 
-pub use self::pdus::{PdusIterItem, bias_count};
+pub use self::{
+	batch::{BatchEvent, BatchOptions},
+	pdus::{PdusIterItem, bias_count},
+};
 use crate::rooms::short::{ShortRoomId, ShortStateHash};
 
 pub struct Service {
 	services: Arc<crate::services::OnceServices>,
 	db: Data,
+	/// Serializes custom-ID batch planning and short-ID allocation.
+	/// ponytail: global lock; use per-event locks if batch throughput matters.
+	pub(super) mutex_batch: tokio::sync::Mutex<()>,
 	/// Serializes timeline insertion as the leaf per-room operation.
 	///
 	/// Acquire it after any federation or state mutex held for the same room.
@@ -55,6 +62,7 @@ pub struct Service {
 }
 
 struct Data {
+	eventid_bridgebatch: Arc<Map>,
 	eventid_outlierpdu: Arc<Map>,
 	eventid_pduid: Arc<Map>,
 	pduid_pdu: Arc<Map>,
@@ -93,12 +101,14 @@ impl crate::Service for Service {
 		Ok(Arc::new(Self {
 			services: args.services.clone(),
 			db: Data {
+				eventid_bridgebatch: args.db["eventid_bridgebatch"].clone(),
 				eventid_outlierpdu: args.db["eventid_outlierpdu"].clone(),
 				eventid_pduid: args.db["eventid_pduid"].clone(),
 				pduid_pdu: args.db["pduid_pdu"].clone(),
 				roomid_tscount_pducount: args.db["roomid_tscount_pducount"].clone(),
 				db: args.db.clone(),
 			},
+			mutex_batch: tokio::sync::Mutex::new(()),
 			mutex_insert: RoomMutexMap::new(),
 		}))
 	}

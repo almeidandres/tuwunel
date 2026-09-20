@@ -56,6 +56,17 @@ pub fn reload(old: &Config, new: &Config) -> Result {
 		));
 	}
 
+	if new.bridge_batch_send != old.bridge_batch_send
+		|| new.bridge_batch_send_appservices != old.bridge_batch_send_appservices
+		|| new.bridge_batch_send_local_senders != old.bridge_batch_send_local_senders
+	{
+		return Err!(Config(
+			"bridge_batch_send",
+			"bridge batch settings cannot be changed at runtime; restart the server to apply \
+			 them."
+		));
+	}
+
 	Ok(())
 }
 
@@ -74,6 +85,7 @@ pub fn check(config: &Config) -> Result {
 
 	check_observability(config)?;
 	check_network(config)?;
+	check_bridge_batch_send(config)?;
 	check_storage(config)?;
 	check_registration(config)?;
 	check_registration_terms(config)?;
@@ -87,6 +99,35 @@ pub fn check(config: &Config) -> Result {
 	check_media_providers(config)?;
 	check_well_known_support_contact_validity(config)?;
 	check_email(config)?;
+
+	Ok(())
+}
+
+fn check_bridge_batch_send(config: &Config) -> Result {
+	if config.bridge_batch_send && config.allow_federation {
+		return Err!(Config(
+			"bridge_batch_send",
+			"bridge batch history import requires allow_federation = false"
+		));
+	}
+
+	if config.bridge_batch_send && config.bridge_batch_send_appservices.is_empty() {
+		return Err!(Config(
+			"bridge_batch_send_appservices",
+			"at least one appservice ID is required when bridge_batch_send is enabled"
+		));
+	}
+
+	if config
+		.bridge_batch_send_local_senders
+		.iter()
+		.any(|user_id| user_id.server_name() != config.server_name)
+	{
+		return Err!(Config(
+			"bridge_batch_send_local_senders",
+			"bridge batch senders must belong to this homeserver"
+		));
+	}
 
 	Ok(())
 }

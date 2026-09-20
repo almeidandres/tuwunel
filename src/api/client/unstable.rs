@@ -1,10 +1,114 @@
-use axum::extract::State;
+use axum::{
+	Json,
+	extract::{Path, State},
+};
+use axum_extra::{
+	TypedHeader,
+	headers::{Authorization, authorization::Bearer},
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as b64};
 use futures::StreamExt;
-use ruma::{OwnedRoomId, UInt, api::client::membership::mutual_rooms};
+use ruma::{OwnedEventId, OwnedRoomId, OwnedUserId, UInt, api::client::membership::mutual_rooms};
+use serde::{Deserialize, Serialize};
 use tuwunel_core::{Err, Result, err};
+use tuwunel_service::rooms::timeline::{BatchEvent, BatchOptions};
 
 use crate::{ClientIp, Ruma};
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct BatchSendRequest {
+	#[serde(default)]
+	forward_if_no_messages: bool,
+	#[serde(default)]
+	forward: bool,
+	#[serde(default)]
+	send_notification: bool,
+	#[serde(default)]
+	mark_read_by: Option<OwnedUserId>,
+	#[serde(default)]
+	events: Vec<BatchEvent>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct BatchSendResponse {
+	event_ids: Vec<OwnedEventId>,
+}
+
+pub(crate) async fn batch_send_route(
+	State(services): State<crate::State>,
+	Path(room_id): Path<OwnedRoomId>,
+	bearer: Option<TypedHeader<Authorization<Bearer>>>,
+	Json(body): Json<BatchSendRequest>,
+) -> Result<Json<BatchSendResponse>> {
+	if !services.config.bridge_batch_send {
+		return Err!(Request(NotFound("Bridge batch sending is disabled.")));
+	}
+
+	let token = bearer
+		.as_ref()
+		.map(|TypedHeader(Authorization(bearer))| bearer.token())
+		.ok_or_else(|| err!(Request(MissingToken("Missing access token."))))?;
+	let appservice = services
+		.appservice
+		.find_from_access_token(token)
+		.await
+		.map_err(|_| err!(Request(Unauthorized("Appservice token required."))))?;
+
+	if !services
+		.config
+		.bridge_batch_send_appservices
+		.iter()
+		.any(|id| id == appservice.registration.id.as_str())
+	{
+		return Err!(Request(Forbidden("Appservice is not allowed to batch send.")));
+	}
+
+	for event in &body.events {
+		if !services.globals.user_is_local(&event.sender) {
+			return Err!(Request(Forbidden("Event sender must be local.")));
+		}
+		let allowed_double_puppet = services
+			.config
+			.bridge_batch_send_local_senders
+			.contains(&event.sender);
+		if !appservice.is_user_match(&event.sender) && !allowed_double_puppet {
+			return Err!(Request(Forbidden("Event sender is not allowed for this appservice.")));
+		}
+		if !services
+			.state_cache
+			.is_joined(&event.sender, &room_id)
+			.await
+		{
+			return Err!(Request(Forbidden("Event sender is not joined to the room.")));
+		}
+	}
+
+	if let Some(user_id) = body.mark_read_by.as_deref()
+		&& (!services
+			.config
+			.bridge_batch_send_local_senders
+			.iter()
+			.any(|allowed| allowed == user_id)
+			|| !services
+				.state_cache
+				.is_joined(user_id, &room_id)
+				.await)
+	{
+		return Err!(Request(Forbidden("mark_read_by user is not allowed.")));
+	}
+
+	let event_ids = services
+		.timeline
+		.append_batch(&room_id, body.events, BatchOptions {
+			forward: body.forward,
+			forward_if_no_messages: body.forward_if_no_messages,
+			send_notification: body.send_notification,
+			mark_read_by: body.mark_read_by.as_deref(),
+		})
+		.await?;
+
+	Ok(Json(BatchSendResponse { event_ids }))
+}
 
 /// Maximum number of rooms returned in a single `mutual_rooms` page.
 const PAGE_SIZE: usize = 1000;

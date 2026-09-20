@@ -1138,6 +1138,30 @@ pub struct Config {
 	#[serde(default = "true_fn")]
 	pub allow_federation: bool,
 
+	/// Enables the local-only mautrix bridge history batch endpoint.
+	///
+	/// This must only be enabled on a fresh, non-federating server. Enabling it
+	/// changes relation-index ordering and does not migrate existing relation rows.
+	/// The endpoint remains restricted to listed appservices.
+	/// reloadable: no
+	/// default: false
+	#[serde(default)]
+	pub bridge_batch_send: bool,
+
+	/// Appservice registration IDs allowed to use bridge batch history import.
+	/// reloadable: no
+	/// default: []
+	#[serde(default)]
+	pub bridge_batch_send_appservices: Vec<String>,
+
+	/// Local double-puppet users that allowed bridge appservices may impersonate
+	/// while importing history. Ghost users in the caller's namespace do not
+	/// need to be listed here.
+	/// reloadable: no
+	/// default: []
+	#[serde(default)]
+	pub bridge_batch_send_local_senders: Vec<OwnedUserId>,
+
 	/// (EXPERIMENTAL) Resolve the base event of a room context request by
 	/// fetching it from federation when the server never received it.
 	///

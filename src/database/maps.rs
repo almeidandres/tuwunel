@@ -113,6 +113,12 @@ pub(super) static MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM_SMALL
 	},
 	Descriptor {
+		name: "eventid_bridgebatch",
+		key_size_hint: Some(48),
+		val_size_hint: Some(32),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
 		name: "eventid_backoff",
 		cache_disp: CacheDisp::Unique, // hot on every redelivery
 		key_size_hint: Some(64),

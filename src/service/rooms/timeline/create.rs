@@ -3,7 +3,7 @@ use std::cmp;
 use futures::{StreamExt, TryStreamExt};
 use ruma::{
 	CanonicalJsonObject, CanonicalJsonValue, MilliSecondsSinceUnixEpoch, OwnedEventId,
-	OwnedRoomId, RoomId, UserId,
+	OwnedRoomId, RoomId, UInt, UserId,
 	events::{StateEventType, TimelineEventType, room::create::RoomCreateEventContent},
 	room_version_rules::RoomIdFormatVersion,
 	uint,
@@ -32,7 +32,31 @@ pub async fn create_hash_and_sign_event(
 	sender: &UserId,
 	room_id: &RoomId,
 	// Take mutex guard to make sure users get the room state mutex
+	mutex_lock: &RoomMutexGuard,
+) -> Result<(PduEvent, CanonicalJsonObject)> {
+	self.create_hash_and_sign_event_with_prev(
+		pdu_builder,
+		sender,
+		room_id,
+		mutex_lock,
+		None,
+		None,
+		None,
+	)
+	.await
+}
+
+#[implement(super::Service)]
+#[expect(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(super) async fn create_hash_and_sign_event_with_prev(
+	&self,
+	pdu_builder: PduBuilder,
+	sender: &UserId,
+	room_id: &RoomId,
 	_mutex_lock: &RoomMutexGuard,
+	prev_events_override: Option<PrevEvents>,
+	event_id_override: Option<OwnedEventId>,
+	depth_override: Option<UInt>,
 ) -> Result<(PduEvent, CanonicalJsonObject)> {
 	let PduBuilder {
 		event_type,
@@ -43,9 +67,12 @@ pub async fn create_hash_and_sign_event(
 		timestamp,
 	} = pdu_builder;
 
-	let prev_events = self
-		.compute_prev_events(room_id, &event_type)
-		.await?;
+	let prev_events = match prev_events_override {
+		| Some(prev_events) => prev_events,
+		| None =>
+			self.compute_prev_events(room_id, &event_type)
+				.await?,
+	};
 
 	// If there was no create event yet, assume we are creating a room
 	let (room_version, version_rules) = self
@@ -82,17 +109,21 @@ pub async fn create_hash_and_sign_event(
 		)
 		.await?;
 
-	// Our depth is the maximum depth of prev_events + 1
-	let depth = prev_events
-		.iter()
-		.stream()
-		.map(Ok)
-		.and_then(|event_id| self.get_pdu(event_id))
-		.ready_and_then(|pdu| Ok(pdu.depth))
-		.ignore_err()
-		.ready_fold(uint!(0), cmp::max)
-		.await
-		.saturating_add(uint!(1));
+	// Our depth is the maximum depth of prev_events + 1.
+	let depth = if let Some(depth) = depth_override {
+		depth
+	} else {
+		prev_events
+			.iter()
+			.stream()
+			.map(Ok)
+			.and_then(|event_id| self.get_pdu(event_id))
+			.ready_and_then(|pdu| Ok(pdu.depth))
+			.ignore_err()
+			.ready_fold(uint!(0), cmp::max)
+			.await
+			.saturating_add(uint!(1))
+	};
 
 	let mut unsigned = unsigned.unwrap_or_default();
 	if let Some(state_key) = &state_key
@@ -181,6 +212,17 @@ pub async fn create_hash_and_sign_event(
 		.services
 		.server_keys
 		.gen_id_hash_and_sign_event(&mut pdu_json, &room_version)?;
+
+	if let Some(event_id) = event_id_override {
+		if version_rules.event_format.require_event_id {
+			return Err!(Request(InvalidParam(
+				"Custom event IDs require a modern room version."
+			)));
+		}
+
+		pdu.event_id = event_id.clone();
+		pdu_json.insert("event_id".into(), CanonicalJsonValue::String(event_id.into()));
+	}
 
 	// Room id is event id for V12+
 	if matches!(version_rules.room_id_format, RoomIdFormatVersion::V2)

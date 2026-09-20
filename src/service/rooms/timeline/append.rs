@@ -22,7 +22,7 @@ use tuwunel_core::{
 	smallvec::SmallVec,
 	utils::{self, result::LogErr},
 };
-use tuwunel_database::Json;
+use tuwunel_database::{Json, Txn};
 
 use super::{ExtractBody, ExtractRelatesTo, ExtractRelatesToEventId, RoomMutexGuard, bias_count};
 use crate::rooms::{
@@ -423,7 +423,18 @@ fn append_pdu_json(&self, pdu_id: &RawPduId, pdu: &PduEvent, json: &CanonicalJso
 	debug_assert!(matches!(pdu_id.pdu_count(), PduCount::Normal(_)), "PduCount not Normal");
 
 	let mut txn = self.db.db.txn();
+	self.stage_pdu_json(&mut txn, pdu_id, pdu, json);
+	txn.execute();
+}
 
+#[implement(super::Service)]
+pub(super) fn stage_pdu_json(
+	&self,
+	txn: &mut Txn,
+	pdu_id: &RawPduId,
+	pdu: &PduEvent,
+	json: &CanonicalJsonObject,
+) {
 	txn.raw_put(&self.db.pduid_pdu, pdu_id, Json(json));
 	txn.insert_raw(&self.db.eventid_pduid, pdu.event_id.as_bytes(), pdu_id);
 	txn.del_raw(&self.db.eventid_outlierpdu, pdu.event_id.as_bytes());
@@ -432,8 +443,6 @@ fn append_pdu_json(&self, pdu_id: &RawPduId, pdu: &PduEvent, json: &CanonicalJso
 	let ts = u64::from(pdu.origin_server_ts);
 	let key = (pdu.room_id(), ts, count_key);
 	txn.put_raw(&self.db.roomid_tscount_pducount, key, pdu_id.count());
-
-	txn.execute();
 }
 
 #[cfg(test)]

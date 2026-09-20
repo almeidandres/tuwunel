@@ -30,6 +30,7 @@ use tuwunel_core::{
 	utils::{BoolExt, IterStream},
 	warn,
 };
+use tuwunel_database::Txn;
 
 use self::data::{Data, ReceiptItem};
 
@@ -386,6 +387,12 @@ impl Service {
 	#[tracing::instrument(skip(self), level = "debug", name = "set_private")]
 	pub async fn private_read_set(&self, private_read: PrivateRead<'_>) -> bool {
 		self.db.private_read_set(private_read).await
+	}
+
+	pub async fn stage_private_read(&self, txn: &mut Txn, private_read: PrivateRead<'_>) -> bool {
+		self.db
+			.stage_private_read(txn, private_read)
+			.await
 	}
 
 	/// Returns the private read marker PDU count.

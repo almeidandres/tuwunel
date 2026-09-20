@@ -15,7 +15,7 @@ use tuwunel_core::{
 };
 
 use super::{ExtractRelatesTo, Service};
-use crate::rooms::short::ShortRoomId;
+use crate::rooms::{short::ShortRoomId, timeline::bias_count};
 
 type Prefix = ArrayVec<u8, 16>;
 
@@ -33,7 +33,12 @@ pub async fn purge_event_relations(
 	room_id: &RoomId,
 	event_id: &EventId,
 ) {
-	let target = parent.to_be_bytes();
+	let target = if self.services.config.bridge_batch_send {
+		bias_count(parent.to_be_bytes())
+	} else {
+		parent.into_unsigned()
+	}
+	.to_be_bytes();
 
 	self.db
 		.tofrom_relation

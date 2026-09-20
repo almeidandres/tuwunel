@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use futures::{
-	Stream, TryStreamExt,
+	Stream, StreamExt, TryStreamExt,
 	future::{join, try_join},
 };
 use ruma::{
@@ -260,27 +260,24 @@ impl Data {
 			false
 		};
 
-		let mut txn = self
-			.sweep_thread_private_reads(
-				&self.roomuserid_privateread,
-				room_id,
-				user_id,
-				thread_kind,
-				self.services.db.txn(),
-			)
-			.await;
+		let mut txn = self.services.db.txn();
+		self.sweep_thread_private_reads(
+			&self.roomuserid_privateread,
+			room_id,
+			user_id,
+			thread_kind,
+			&mut txn,
+		)
+		.await;
 
-		if announce && (thread_kind.is_empty() || reset_sync) {
-			txn = match self
-				.sweep_private_read_sync(room_id, user_id, txn)
+		if announce
+			&& (thread_kind.is_empty() || reset_sync)
+			&& let Err(error) = self
+				.sweep_private_read_sync(room_id, user_id, &mut txn)
 				.await
-			{
-				| Ok(txn) => txn,
-				| Err(error) => {
-					error!(?error, "Failed to reset the private read sync snapshot.");
-					return false;
-				},
-			};
+		{
+			error!(?error, "Failed to reset the private read sync snapshot.");
+			return false;
 		}
 
 		// The permit retires the sequence number on drop, so it outlives execute().
@@ -309,6 +306,46 @@ impl Data {
 
 		txn.execute();
 
+		true
+	}
+
+	/// Stages an unannounced, unthreaded private read marker in an existing
+	/// transaction.
+	pub(super) async fn stage_private_read(
+		&self,
+		txn: &mut Txn,
+		PrivateRead {
+			room_id,
+			user_id,
+			count,
+			ts,
+			thread,
+			announce,
+		}: PrivateRead<'_>,
+	) -> bool {
+		let thread_kind = thread.as_str().unwrap_or_default();
+		debug_assert!(!announce, "batch markers must not be announced");
+		debug_assert!(thread_kind.is_empty(), "batch markers must be unthreaded");
+
+		if announce
+			|| !thread_kind.is_empty()
+			|| self
+				.private_read_position(room_id, user_id, thread_kind)
+				.await
+				.is_ok_and(|(stored, _)| count <= stored)
+		{
+			return false;
+		}
+
+		self.sweep_thread_private_reads(
+			&self.roomuserid_privateread,
+			room_id,
+			user_id,
+			thread_kind,
+			txn,
+		)
+		.await;
+		txn.put(&self.roomuserid_privateread, (room_id, user_id), (count, u64::from(ts.get())));
 		true
 	}
 
@@ -383,21 +420,21 @@ impl Data {
 		room_id: &RoomId,
 		user_id: &UserId,
 		thread_kind: &str,
-		txn: Txn,
-	) -> Txn {
+		txn: &mut Txn,
+	) {
 		if !thread_kind.is_empty() {
-			return txn;
+			return;
 		}
 
 		let prefix = (room_id, user_id, Interfix);
-
-		map.keys_prefix_raw(&prefix)
+		let keys: Vec<_> = map
+			.keys_prefix_raw(&prefix)
 			.ignore_err()
-			.ready_fold(txn, |mut txn, key| {
-				txn.del_raw(map, key);
-				txn
-			})
-			.await
+			.collect()
+			.await;
+		for key in keys {
+			txn.del_raw(map, key);
+		}
 	}
 
 	#[inline]
@@ -405,17 +442,18 @@ impl Data {
 		&self,
 		room_id: &RoomId,
 		user_id: &UserId,
-		txn: Txn,
-	) -> Result<Txn> {
+		txn: &mut Txn,
+	) -> Result {
 		let prefix = (room_id, user_id, Interfix);
-
-		self.roomuserid_privatereadsync
+		let keys: Vec<_> = self
+			.roomuserid_privatereadsync
 			.keys_prefix_raw(&prefix)
-			.ready_try_fold(txn, |mut txn, key| {
-				txn.del_raw(&self.roomuserid_privatereadsync, key);
-				Ok(txn)
-			})
-			.await
+			.try_collect()
+			.await?;
+		for key in keys {
+			txn.del_raw(&self.roomuserid_privatereadsync, key);
+		}
+		Ok(())
 	}
 
 	#[inline]

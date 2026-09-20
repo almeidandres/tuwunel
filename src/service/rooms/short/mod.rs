@@ -100,6 +100,12 @@ where
 }
 
 #[implement(Service)]
+pub fn stage_shorteventid(&self, txn: &mut Txn, event_id: &EventId, shorteventid: ShortEventId) {
+	txn.insert_raw(&self.db.shorteventid_eventid, shorteventid.to_be_bytes(), event_id);
+	txn.insert_raw(&self.db.eventid_shorteventid, event_id, shorteventid.to_be_bytes());
+}
+
+#[implement(Service)]
 async fn create_shorteventid(&self, event_id: &EventId) -> ShortEventId {
 	let _lock = self.creating.shorteventid.lock(event_id).await;
 

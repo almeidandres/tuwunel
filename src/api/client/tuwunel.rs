@@ -11,7 +11,11 @@ use crate::Ruma;
 ///
 /// Tuwunel-specific API to get the server version, results akin to
 /// `/_matrix/federation/v1/version`
-pub(crate) async fn tuwunel_server_version() -> Result<impl IntoResponse> {
+pub(crate) async fn tuwunel_server_version(
+	State(services): State<crate::State>,
+) -> Result<impl IntoResponse> {
+	services.appservice.loaded().await;
+
 	Ok(Json(serde_json::json!({
 		"name": tuwunel_core::version::name(),
 		"version": tuwunel_core::version::version(),

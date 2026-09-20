@@ -8,7 +8,7 @@ use std::{fmt::Debug, iter::once, sync::Arc};
 
 use rocksdb::WriteBatch;
 use serde::Serialize;
-use tuwunel_core::implement;
+use tuwunel_core::{Result, implement};
 
 use crate::{
 	Engine, Map,
@@ -336,13 +336,8 @@ where
 /// watchers.
 ///
 /// An empty transaction returns without touching the engine. For a nonempty
-/// batch, notifications occur only after the write and any required flush
-/// succeed.
-///
-/// # Panics
-///
-/// Panics when RocksDB rejects the batch write or when the required database
-/// flush fails.
+/// batch, notifications occur after the write becomes visible, even when a
+/// subsequent durability flush fails.
 #[implement(Txn)]
 #[tracing::instrument(
 	level = "trace",
@@ -352,22 +347,32 @@ where
 		bytes = self.size_in_bytes(),
 	)
 )]
-pub fn execute(self) {
+pub fn try_execute(self) -> Result {
 	if self.is_empty() {
-		return;
+		return Ok(());
 	}
 
 	self.engine
 		.db
 		.write_opt(&self.batch, &self.engine.write_options)
-		.or_else(or_else)
-		.expect("database transaction execute error");
+		.or_else(or_else)?;
 
-	if !self.engine.corked() {
-		self.engine.flush().expect("database flush error");
-	}
+	let flush = if self.engine.corked() {
+		Ok(())
+	} else {
+		self.engine.flush()
+	};
 
+	// The write is visible once write_opt succeeds, even if the durability flush fails.
 	self.notify();
+	flush
+}
+
+/// Commits the batch, panicking on database or flush errors.
+#[implement(Txn)]
+pub fn execute(self) {
+	self.try_execute()
+		.expect("database transaction execute error");
 }
 
 /// Notifies watchers after a successful commit for queued keys that resolve to

@@ -668,6 +668,16 @@ pub async fn get_shortstatehash(&self, shorteventid: ShortEventId) -> Result<Sho
 }
 
 #[implement(Service)]
+pub fn stage_event_state(
+	&self,
+	txn: &mut Txn,
+	shorteventid: ShortEventId,
+	shortstatehash: ShortStateHash,
+) {
+	txn.put(&self.db.shorteventid_shortstatehash, shorteventid, shortstatehash);
+}
+
+#[implement(Service)]
 pub(super) fn delete_room_shortstatehash(
 	&self,
 	room_id: &RoomId,
@@ -757,17 +767,37 @@ pub async fn set_forward_extremities<'a, I>(
 ) where
 	I: Iterator<Item = &'a EventId> + Send + 'a,
 {
+	let mut txn = self.services.db.txn();
+	self.stage_forward_extremities(&mut txn, room_id, event_ids)
+		.await;
+	txn.execute();
+}
+
+#[implement(Service)]
+pub async fn stage_forward_extremities<'a, I>(
+	&'a self,
+	txn: &mut Txn,
+	room_id: &'a RoomId,
+	event_ids: I,
+) where
+	I: Iterator<Item = &'a EventId> + Send + 'a,
+{
 	let prefix = (room_id, Interfix);
-	self.db
+	let keys: Vec<_> = self
+		.db
 		.roomid_pduleaves
 		.keys_prefix_raw(&prefix)
 		.ignore_err()
-		.ready_for_each(|key| self.db.roomid_pduleaves.remove(key))
+		.collect()
 		.await;
+
+	for key in keys {
+		txn.del_raw(&self.db.roomid_pduleaves, key);
+	}
 
 	for event_id in event_ids {
 		let key = (room_id, event_id);
-		self.db.roomid_pduleaves.put_raw(key, event_id);
+		txn.put_raw(&self.db.roomid_pduleaves, key, event_id);
 	}
 }
 
