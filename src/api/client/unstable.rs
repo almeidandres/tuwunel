@@ -91,15 +91,11 @@ pub(crate) async fn batch_send_route(
 	}
 
 	if let Some(user_id) = body.mark_read_by.as_deref()
-		&& (!services
+		&& !services
 			.config
 			.bridge_batch_send_local_senders
 			.iter()
 			.any(|allowed| allowed == user_id)
-			|| !services
-				.state_cache
-				.is_joined(user_id, &room_id)
-				.await)
 	{
 		return Err!(Request(Forbidden("mark_read_by user is not allowed.")));
 	}
