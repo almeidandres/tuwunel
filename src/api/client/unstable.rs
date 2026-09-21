@@ -63,6 +63,20 @@ pub(crate) async fn batch_send_route(
 		return Err!(Request(Forbidden("Appservice is not allowed to batch send.")));
 	}
 
+	let mut appservice_controls_room = services
+		.state_cache
+		.is_joined(&appservice.sender, &room_id)
+		.await;
+	for user_id in &services.config.bridge_batch_send_local_senders {
+		appservice_controls_room |= services
+			.state_cache
+			.is_joined(user_id, &room_id)
+			.await;
+	}
+	if !appservice_controls_room {
+		return Err!(Request(Forbidden("Appservice does not control this room.")));
+	}
+
 	for event in &body.events {
 		if !services.globals.user_is_local(&event.sender) {
 			return Err!(Request(Forbidden("Event sender must be local.")));
@@ -73,13 +87,6 @@ pub(crate) async fn batch_send_route(
 			.contains(&event.sender);
 		if !appservice.is_user_match(&event.sender) && !allowed_double_puppet {
 			return Err!(Request(Forbidden("Event sender is not allowed for this appservice.")));
-		}
-		if !services
-			.state_cache
-			.is_joined(&event.sender, &room_id)
-			.await
-		{
-			return Err!(Request(Forbidden("Event sender is not joined to the room.")));
 		}
 	}
 

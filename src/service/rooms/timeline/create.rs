@@ -42,6 +42,7 @@ pub async fn create_hash_and_sign_event(
 		None,
 		None,
 		None,
+		false,
 	)
 	.await
 }
@@ -57,6 +58,7 @@ pub(super) async fn create_hash_and_sign_event_with_prev(
 	prev_events_override: Option<PrevEvents>,
 	event_id_override: Option<OwnedEventId>,
 	depth_override: Option<UInt>,
+	skip_auth_check: bool,
 ) -> Result<(PduEvent, CanonicalJsonObject)> {
 	let PduBuilder {
 		event_type,
@@ -185,14 +187,16 @@ pub(super) async fn create_hash_and_sign_event_with_prev(
 			.ok_or_else(|| err!(Request(NotFound("Missing auth events"))))
 	};
 
-	state_res::auth_check(
-		&version_rules,
-		&pdu,
-		&async |event_id: OwnedEventId| self.get_pdu(&event_id).await,
-		&auth_fetch,
-	)
-	.await?
-	.into_result()?;
+	if !skip_auth_check {
+		state_res::auth_check(
+			&version_rules,
+			&pdu,
+			&async |event_id: OwnedEventId| self.get_pdu(&event_id).await,
+			&auth_fetch,
+		)
+		.await?
+		.into_result()?;
+	}
 
 	// Hash and sign
 	let mut pdu_json = to_canonical_object(&pdu).map_err(|e| {

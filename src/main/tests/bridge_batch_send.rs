@@ -34,8 +34,8 @@ fn bridge_batch_is_atomic_ordered_and_idempotent() -> Result {
 	write(
 		appservice_dir.join("test.yaml"),
 		"id: test\nurl: null\nas_token: bridge-appservice-token\nhs_token: \
-		 test-hs-token\nsender_localpart: bridgebot\nnamespaces:\n  users: []\n  aliases: []\n  \
-		 rooms: []\n",
+		 test-hs-token\nsender_localpart: bridgebot\nnamespaces:\n  users:\n    - regex: \
+		 '^@bridge_.*:localhost$'\n      exclusive: true\n  aliases: []\n  rooms: []\n",
 	)?;
 	let mut args = Args::default_test(&["fresh", "cleanup"]);
 	args.option.extend([
@@ -197,11 +197,13 @@ async fn exercise(services: &Services, base: &str) -> Result {
 	}
 
 	let notified_id = event_id("notified", services)?;
+	let historical_sender =
+		UserId::parse_with_server_name("bridge_historical", services.globals.server_name())?;
 	services
 		.timeline
 		.append_batch(
 			&room,
-			vec![batch_event(&room, &user, notified_id.clone(), 3)?],
+			vec![batch_event(&room, &historical_sender, notified_id.clone(), 3)?],
 			BatchOptions {
 				forward: true,
 				send_notification: true,

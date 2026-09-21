@@ -134,6 +134,7 @@ pub async fn append_batch(
 				Some(prev_events),
 				Some(event.event_id.clone()),
 				depth,
+				true,
 			)
 			.await?;
 
