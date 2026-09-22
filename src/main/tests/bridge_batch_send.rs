@@ -212,6 +212,14 @@ async fn exercise(services: &Services, base: &str) -> Result {
 		)
 		.await?;
 
+	reqwest::Client::new()
+		.put(format!("{base}/_matrix/client/v3/rooms/{room}/state/m.room.name"))
+		.bearer_auth(token)
+		.json(&json!({"name": "State changed after the forward batch"}))
+		.send()
+		.await?
+		.error_for_status()?;
+
 	let old_ids = [
 		event_id("oldest", services)?,
 		event_id("older", services)?,
@@ -260,6 +268,10 @@ async fn exercise(services: &Services, base: &str) -> Result {
 		return Err!("non-appservice token unexpectedly authorized");
 	}
 
+	let marker_before_failure = services
+		.read_receipt
+		.private_read_get_count(&room, &user)
+		.await?;
 	let invalid_ids = [event_id("uncommitted", services)?, event_id("invalid", services)?];
 	let mut invalid = vec![
 		batch_event(&room, &user, invalid_ids[0].clone(), 3)?,
@@ -285,7 +297,7 @@ async fn exercise(services: &Services, base: &str) -> Result {
 		.read_receipt
 		.private_read_get_count(&room, &user)
 		.await?
-		.0 != second_count.into_unsigned()
+		!= marker_before_failure
 	{
 		return Err!("failed batch changed the read marker");
 	}

@@ -99,17 +99,7 @@ pub async fn append_batch(
 		let anchor = first_message.ok_or_else(|| {
 			err!(Request(InvalidParam("Cannot prepend into a room without an existing message.")))
 		})?;
-		let anchor_state = self
-			.services
-			.state
-			.pdu_shortstatehash(&anchor.event_id)
-			.await?;
-		if anchor_state != current_state {
-			return Err!(Request(InvalidParam(
-				"Historical state changes are not supported yet."
-			)));
-		}
-		(anchor.prev_events, anchor_state)
+		(anchor.prev_events, current_state)
 	};
 
 	let mut planned = Vec::with_capacity(events.len());
