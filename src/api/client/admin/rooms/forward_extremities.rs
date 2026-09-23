@@ -53,8 +53,7 @@ pub(crate) async fn admin_get_forward_extremities_route(
 /// # `DELETE /_synapse/admin/v1/rooms/{room_id_or_alias}/forward_extremities`
 ///
 /// Collapses the room to a single forward extremity, keeping the one furthest
-/// along in stream order. Rooms with no extremity recover their latest event.
-/// Reports how many excess extremities were removed.
+/// along in stream order, and reports how many were removed.
 pub(crate) async fn admin_delete_forward_extremities_route(
 	State(services): State<crate::State>,
 	body: Ruma<DeleteRequest>,

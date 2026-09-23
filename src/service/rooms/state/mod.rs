@@ -707,19 +707,7 @@ pub async fn collapse_forward_extremities(
 		.collect()
 		.await;
 
-	if extremities.is_empty() {
-		if let Ok(pdu) = self
-			.services
-			.timeline
-			.latest_pdu_in_room(room_id)
-			.await
-		{
-			self.set_forward_extremities(room_id, once(&*pdu.event_id), state_lock)
-				.await;
-		}
-		return 0;
-	}
-	if extremities.len() == 1 {
+	if extremities.len() <= 1 {
 		return 0;
 	}
 
